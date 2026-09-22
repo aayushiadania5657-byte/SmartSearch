@@ -1,0 +1,27 @@
+# Python 
+__pycache__/
+*.py[cod]
+
+#Virtual enviornment
+.venv/
+
+# Enviornment variables
+.env
+
+#IDE
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+#Python tools
+.pytest_cache/
+.mypy_cache/
+
+# Project data
+data/raw/
+data/processed/
+
+#logs
+*.log
