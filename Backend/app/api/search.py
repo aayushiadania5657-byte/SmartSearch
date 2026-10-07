@@ -1,35 +1,16 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
 
+from app.core.database import get_db
+from app.models.document import Document
 from app.search.engine import SearchEngine
 from app.search.models import SearchDocument
 
 
-router = APIRouter(prefix="/search", tags=["Search"])
-
-
-documents = [
-    SearchDocument(
-        id="doc-1",
-        title="Python Programming",
-        content="Python is useful for web development, automation, and artificial intelligence.",
-        source="demo://python",
-    ),
-    SearchDocument(
-        id="doc-2",
-        title="Java Programming",
-        content="Java is widely used for enterprise applications and backend development.",
-        source="demo://java",
-    ),
-    SearchDocument(
-        id="doc-3",
-        title="Python Automation",
-        content="Python Python automation can simplify repetitive tasks and workflows.",
-        source="demo://automation",
-    ),
-]
-
-
-search_engine = SearchEngine(documents)
+router = APIRouter(
+    prefix="/search",
+    tags=["Search"],
+)
 
 
 @router.get("")
@@ -38,8 +19,32 @@ def search(
         ...,
         min_length=1,
         description="Search query",
-    )
+    ),
+    db: Session = Depends(get_db),
 ):
+    """
+    Search all indexed documents and return
+    results ranked by relevance.
+    """
+
+    database_documents = (
+        db.query(Document).all()
+    )
+
+    documents = [
+        SearchDocument(
+            id=str(document.id),
+            title=document.title,
+            content=document.content,
+            source=document.source,
+        )
+        for document in database_documents
+    ]
+
+    search_engine = SearchEngine(
+        documents
+    )
+
     results = search_engine.search(q)
 
     return {
