@@ -1,3 +1,4 @@
+
 import math
 import re
 from collections import Counter
@@ -18,6 +19,7 @@ class SearchEngine:
     Additional relevance signals:
     - Title matches
     - Exact phrase matches
+    - Stop-word filtering
     """
 
     K1 = 1.5
@@ -25,6 +27,20 @@ class SearchEngine:
 
     TITLE_BOOST = 2.0
     PHRASE_BOOST = 1.5
+
+    STOP_WORDS = {
+        "a", "an", "and", "are", "as", "at",
+        "be", "but", "by",
+        "do", "does", "for", "from",
+        "had", "has", "have", "how",
+        "i", "if", "in", "into", "is", "it",
+        "me", "my",
+        "of", "on", "or", "our",
+        "the", "their", "this", "to",
+        "was", "we", "were", "what", "when",
+        "where", "which", "who", "why", "with",
+        "you", "your",
+    }
 
     def __init__(self, documents: list[SearchDocument]):
         self.documents = documents
@@ -38,12 +54,9 @@ class SearchEngine:
             tokens = self._tokenize(document.content)
 
             self.document_tokens[document.id] = tokens
-
             total_length += len(tokens)
 
-            unique_tokens = set(tokens)
-
-            for token in unique_tokens:
+            for token in set(tokens):
                 self.document_frequencies[token] += 1
 
         self.document_count = len(documents)
@@ -58,37 +71,35 @@ class SearchEngine:
     @staticmethod
     def _tokenize(text: str) -> list[str]:
         """
-        Convert text into normalized word tokens.
+        Normalize text into lowercase tokens and
+        remove common English stop words.
         """
 
-        return re.findall(
+        tokens = re.findall(
             r"\b[a-zA-Z0-9]+\b",
             text.lower(),
         )
 
+        return [
+            token
+            for token in tokens
+            if token not in SearchEngine.STOP_WORDS
+        ]
+
     @staticmethod
     def _normalize_text(text: str) -> str:
-        """
-        Normalize text for phrase matching.
-        """
+        """Normalize text for phrase matching."""
 
-        return " ".join(
-            SearchEngine._tokenize(text)
-        )
+        return " ".join(SearchEngine._tokenize(text))
 
     def _calculate_idf(self, term: str) -> float:
         """
         Calculate inverse document frequency (IDF).
-
-        Terms appearing in many documents receive
-        lower importance.
-
-        Terms appearing in fewer documents receive
-        higher importance.
+        Rare terms receive greater importance.
         """
 
-        document_frequency = (
-            self.document_frequencies.get(term, 0)
+        document_frequency = self.document_frequencies.get(
+            term, 0
         )
 
         if self.document_count == 0:
@@ -102,8 +113,7 @@ class SearchEngine:
                 + 0.5
             )
             / (
-                document_frequency
-                + 0.5
+                document_frequency + 0.5
             )
         )
 
@@ -113,10 +123,7 @@ class SearchEngine:
         term_frequency: int,
         document_length: int,
     ) -> float:
-        """
-        Calculate the BM25 score contribution
-        for one term in one document.
-        """
+        """Calculate one term's contribution to BM25."""
 
         if term_frequency == 0:
             return 0.0
@@ -136,30 +143,21 @@ class SearchEngine:
             )
         )
 
-        numerator = (
-            term_frequency
-            * (self.K1 + 1)
-        )
+        numerator = term_frequency * (self.K1 + 1)
 
         denominator = (
             term_frequency
-            + self.K1
-            * length_normalization
+            + self.K1 * length_normalization
         )
 
-        return idf * (
-            numerator / denominator
-        )
+        return idf * (numerator / denominator)
 
     def _calculate_score(
         self,
         document: SearchDocument,
         query: str,
     ) -> float:
-        """
-        Calculate the complete relevance score
-        for one document.
-        """
+        """Calculate the complete relevance score."""
 
         query_tokens = self._tokenize(query)
 
@@ -167,32 +165,20 @@ class SearchEngine:
             return 0.0
 
         document_tokens = self.document_tokens.get(
-            document.id,
-            [],
+            document.id, []
         )
 
         if not document_tokens:
             return 0.0
 
-        term_frequencies = Counter(
-            document_tokens
-        )
-
-        document_length = len(
-            document_tokens
-        )
+        term_frequencies = Counter(document_tokens)
+        document_length = len(document_tokens)
 
         score = 0.0
 
-        # --------------------------------------------------
         # BM25 content score
-        # --------------------------------------------------
-
         for term in set(query_tokens):
-            term_frequency = term_frequencies.get(
-                term,
-                0,
-            )
+            term_frequency = term_frequencies.get(term, 0)
 
             score += self._calculate_bm25(
                 term=term,
@@ -200,34 +186,20 @@ class SearchEngine:
                 document_length=document_length,
             )
 
-        # --------------------------------------------------
-        # Title relevance
-        # --------------------------------------------------
-
+        # Title relevance boost
         normalized_title = self._normalize_text(
             document.title
         )
-
-        title_tokens = self._tokenize(
-            document.title
-        )
-
         title_frequencies = Counter(
-            title_tokens
+            self._tokenize(document.title)
         )
 
         for term in set(query_tokens):
             if title_frequencies.get(term, 0) > 0:
                 score += self.TITLE_BOOST
 
-        # --------------------------------------------------
-        # Exact phrase relevance
-        # --------------------------------------------------
-
-        normalized_query = self._normalize_text(
-            query
-        )
-
+        # Exact phrase relevance boost
+        normalized_query = self._normalize_text(query)
         normalized_content = self._normalize_text(
             document.content
         )
@@ -246,18 +218,13 @@ class SearchEngine:
 
         return round(score, 4)
 
-    def search(
-        self,
-        query: str,
-    ) -> list[dict]:
+    def search(self, query: str) -> list[dict]:
         """
-        Search all documents and return them
-        ordered by BM25 relevance.
+        Search documents and return positive-scoring
+        results ordered by BM25 relevance.
         """
 
-        normalized_query = self._normalize_text(
-            query
-        )
+        normalized_query = self._normalize_text(query)
 
         if not normalized_query:
             return []
@@ -271,12 +238,10 @@ class SearchEngine:
             )
 
             if score > 0:
-                results.append(
-                    {
-                        "document": document,
-                        "score": score,
-                    }
-                )
+                results.append({
+                    "document": document,
+                    "score": score,
+                })
 
         results.sort(
             key=lambda result: result["score"],
