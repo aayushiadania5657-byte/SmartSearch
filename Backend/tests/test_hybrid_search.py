@@ -37,19 +37,15 @@ def make_documents():
 def test_hybrid_search_combines_both_rankings():
     documents = make_documents()
 
-    keyword_engine = FakeSearchEngine(
-        [
-            {"document": documents[0], "score": 8.0},
-            {"document": documents[1], "score": 5.0},
-        ]
-    )
+    keyword_engine = FakeSearchEngine([
+        {"document": documents[0], "score": 8.0},
+        {"document": documents[1], "score": 5.0},
+    ])
 
-    semantic_engine = FakeSearchEngine(
-        [
-            {"document": documents[1], "score": 0.91},
-            {"document": documents[0], "score": 0.82},
-        ]
-    )
+    semantic_engine = FakeSearchEngine([
+        {"document": documents[1], "score": 0.91},
+        {"document": documents[0], "score": 0.82},
+    ])
 
     engine = HybridSearchEngine(
         documents,
@@ -67,19 +63,15 @@ def test_hybrid_search_combines_both_rankings():
 def test_document_ranked_first_by_both_engines_wins():
     documents = make_documents()
 
-    keyword_engine = FakeSearchEngine(
-        [
-            {"document": documents[0], "score": 10.0},
-            {"document": documents[1], "score": 4.0},
-        ]
-    )
+    keyword_engine = FakeSearchEngine([
+        {"document": documents[0], "score": 10.0},
+        {"document": documents[1], "score": 4.0},
+    ])
 
-    semantic_engine = FakeSearchEngine(
-        [
-            {"document": documents[0], "score": 0.95},
-            {"document": documents[1], "score": 0.80},
-        ]
-    )
+    semantic_engine = FakeSearchEngine([
+        {"document": documents[0], "score": 0.95},
+        {"document": documents[1], "score": 0.80},
+    ])
 
     engine = HybridSearchEngine(
         documents,
@@ -109,18 +101,14 @@ def test_empty_query_returns_no_results():
 def test_documents_are_not_duplicated():
     documents = make_documents()
 
-    keyword_engine = FakeSearchEngine(
-        [
-            {"document": documents[0], "score": 5.0},
-        ]
-    )
+    keyword_engine = FakeSearchEngine([
+        {"document": documents[0], "score": 5.0},
+    ])
 
-    semantic_engine = FakeSearchEngine(
-        [
-            {"document": documents[0], "score": 0.90},
-            {"document": documents[1], "score": 0.70},
-        ]
-    )
+    semantic_engine = FakeSearchEngine([
+        {"document": documents[0], "score": 0.90},
+        {"document": documents[1], "score": 0.70},
+    ])
 
     engine = HybridSearchEngine(
         documents,
@@ -129,7 +117,6 @@ def test_documents_are_not_duplicated():
     )
 
     results = engine.search("Python")
-
     result_ids = [result["document"].id for result in results]
 
     assert len(result_ids) == len(set(result_ids))
@@ -167,3 +154,40 @@ def test_both_zero_weights_are_rejected():
         pass
     else:
         raise AssertionError("Both zero weights should be rejected.")
+
+
+def test_identical_documents_are_deduplicated():
+    first = SearchDocument(
+        id="10",
+        title="Cybersecurity Best Practices",
+        content="Keep software updated and enable a firewall.",
+        source="demo://cybersecurity",
+    )
+
+    duplicate = SearchDocument(
+        id="11",
+        title="Cybersecurity Best Practices",
+        content="Keep software updated and enable a firewall.",
+        source="upload://cybersecurity.pdf",
+    )
+
+    keyword_engine = FakeSearchEngine([
+        {"document": first, "score": 5.0},
+        {"document": duplicate, "score": 4.0},
+    ])
+
+    semantic_engine = FakeSearchEngine([
+        {"document": duplicate, "score": 0.95},
+        {"document": first, "score": 0.90},
+    ])
+
+    engine = HybridSearchEngine(
+        [first, duplicate],
+        keyword_engine=keyword_engine,
+        semantic_engine=semantic_engine,
+    )
+
+    results = engine.search("cybersecurity")
+
+    assert len(results) == 1
+    assert results[0]["document"].id in {"10", "11"}

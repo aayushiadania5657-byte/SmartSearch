@@ -8,12 +8,10 @@ class HybridSearchEngine:
     """
     Combine keyword and semantic rankings using
     Reciprocal Rank Fusion (RRF).
-
-    RRF combines ranking positions rather than raw
-    scores, which have different scales.
     """
 
     RRF_K = 60
+    SEMANTIC_TOP_K = 3
 
     def __init__(
         self,
@@ -22,29 +20,56 @@ class HybridSearchEngine:
         semantic_engine=None,
         keyword_weight: float = 1.0,
         semantic_weight: float = 1.0,
+        semantic_top_k: int = SEMANTIC_TOP_K,
     ):
         if keyword_weight < 0 or semantic_weight < 0:
             raise ValueError("Ranking weights cannot be negative.")
 
         if keyword_weight == 0 and semantic_weight == 0:
-            raise ValueError("At least one ranking weight must be positive.")
+            raise ValueError(
+                "At least one ranking weight must be positive."
+            )
+
+        if semantic_top_k < 1:
+            raise ValueError("semantic_top_k must be at least 1.")
 
         self.documents = documents
         self.keyword_weight = keyword_weight
         self.semantic_weight = semantic_weight
+        self.semantic_top_k = semantic_top_k
 
-        # Dependency injection makes testing easier and lets us
-        # reuse existing engines without modifying them.
-        self.keyword_engine = keyword_engine or SearchEngine(documents)
-        self.semantic_engine = semantic_engine or SemanticSearchEngine(
-            documents
+        self.keyword_engine = (
+            keyword_engine
+            if keyword_engine is not None
+            else SearchEngine(documents)
         )
 
+        self.semantic_engine = (
+            semantic_engine
+            if semantic_engine is not None
+            else SemanticSearchEngine(documents)
+        )
+
+    @staticmethod
+    def _deduplication_key(document: SearchDocument) -> tuple[str, str]:
+        """
+        Identify duplicate documents by normalized title and content.
+
+        Source and ID are intentionally excluded so that copies
+        imported from different locations can be grouped.
+        """
+
+        normalized_title = " ".join(
+            document.title.casefold().split()
+        )
+        normalized_content = " ".join(
+            document.content.casefold().split()
+        )
+
+        return normalized_title, normalized_content
+
     def search(self, query: str) -> list[dict]:
-        """
-        Return documents ranked by combined keyword and
-        semantic relevance.
-        """
+        """Return deduplicated documents ranked by RRF."""
 
         if not query or not query.strip():
             return []
@@ -52,7 +77,8 @@ class HybridSearchEngine:
         keyword_results = self.keyword_engine.search(query)
         semantic_results = self.semantic_engine.search(query)
 
-        # Store each document once, even if both engines find it.
+        semantic_results = semantic_results[:self.semantic_top_k]
+
         documents_by_id = {
             document.id: document
             for document in self.documents
@@ -75,9 +101,8 @@ class HybridSearchEngine:
                     continue
 
                 rank_map[document_id] = rank
-
-                fused_scores[document_id] += (
-                    weight / (self.RRF_K + rank)
+                fused_scores[document_id] += weight / (
+                    self.RRF_K + rank
                 )
 
         add_ranked_results(
@@ -95,7 +120,6 @@ class HybridSearchEngine:
         ranked_documents = []
 
         for document_id, document in documents_by_id.items():
-            # Exclude documents not retrieved by either engine.
             if (
                 document_id not in keyword_ranks
                 and document_id not in semantic_ranks
@@ -118,4 +142,18 @@ class HybridSearchEngine:
             )
         )
 
-        return ranked_documents
+        # Remove identical title/content pairs, keeping the
+        # highest-ranked copy. Database records are not deleted.
+        deduplicated_results = []
+        seen_keys = set()
+
+        for result in ranked_documents:
+            key = self._deduplication_key(result["document"])
+
+            if key in seen_keys:
+                continue
+
+            seen_keys.add(key)
+            deduplicated_results.append(result)
+
+        return deduplicated_results
