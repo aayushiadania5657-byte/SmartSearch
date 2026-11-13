@@ -1,5 +1,6 @@
 
 import hashlib
+import re
 import threading
 
 from fastapi import APIRouter, Depends, Query
@@ -72,6 +73,85 @@ def _get_hybrid_engine(
         return _cached_engine
 
 
+def _build_snippet(
+    content: str,
+    query: str,
+    max_length: int = 240,
+) -> str:
+    """
+    Extract a short excerpt near a matching query phrase or term.
+    If no literal match exists, return the beginning of the content.
+    """
+
+    if not content:
+        return ""
+
+    match_position = -1
+
+    # First, look for the complete query phrase.
+    phrase = query.strip()
+
+    if phrase:
+        phrase_match = re.search(
+            re.escape(phrase),
+            content,
+            flags=re.IGNORECASE,
+        )
+
+        if phrase_match:
+            match_position = phrase_match.start()
+
+    # If the complete phrase is absent, find the earliest query term.
+    if match_position == -1:
+        terms = re.findall(r"\w+", query, flags=re.UNICODE)
+
+        positions = []
+
+        for term in terms:
+            if len(term) < 2:
+                continue
+
+            term_match = re.search(
+                re.escape(term),
+                content,
+                flags=re.IGNORECASE,
+            )
+
+            if term_match:
+                positions.append(term_match.start())
+
+        if positions:
+            match_position = min(positions)
+
+    if match_position == -1:
+        match_position = 0
+
+    start = max(0, match_position - max_length // 3)
+    end = min(len(content), start + max_length)
+
+    # Avoid cutting words at the beginning of the excerpt.
+    if start > 0:
+        next_space = content.find(" ", start)
+        if next_space != -1 and next_space < end:
+            start = next_space + 1
+
+    # Extend the end slightly to finish the last word.
+    if end < len(content):
+        next_space = content.find(" ", end)
+        if next_space != -1:
+            end = next_space
+
+    snippet = content[start:end].strip()
+
+    if start > 0:
+        snippet = "..." + snippet
+
+    if end < len(content):
+        snippet += "..."
+
+    return snippet
+
+
 @router.get("")
 def search(
     q: str = Query(
@@ -118,6 +198,10 @@ def search(
                 "id": result["document"].id,
                 "title": result["document"].title,
                 "source": result["document"].source,
+                "snippet": _build_snippet(
+                    result["document"].content,
+                    q,
+                ),
                 "score": result["score"],
                 "keyword_rank": result["keyword_rank"],
                 "semantic_rank": result["semantic_rank"],

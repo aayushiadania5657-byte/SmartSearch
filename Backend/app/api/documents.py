@@ -1,4 +1,6 @@
+import re
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -13,6 +15,9 @@ router = APIRouter(
     prefix="/documents",
     tags=["Documents"],
 )
+
+MAX_PDF_SIZE_BYTES = 10 * 1024 * 1024
+UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 class DocumentCreate(BaseModel):
@@ -85,42 +90,98 @@ async def upload_pdf(
             detail="No file selected",
         )
 
-    if not file.filename.lower().endswith(".pdf"):
+    # Normalize the supplied filename and remove directory components.
+    original_name = Path(
+        file.filename.replace("\\", "/")
+    ).name
+
+    if not original_name.lower().endswith(".pdf"):
         raise HTTPException(
             status_code=400,
             detail="Only PDF files are supported",
         )
 
-    project_root = Path(__file__).resolve().parents[3]
+    # Keep a safe display name; never use it as the storage path.
+    safe_name = re.sub(
+        r"[^\w.\- ]",
+        "_",
+        original_name,
+        flags=re.UNICODE,
+    ).strip(" .")
 
+    if not safe_name or safe_name.lower() == ".pdf":
+        safe_name = "uploaded_document.pdf"
+
+    title = Path(safe_name).stem or "Uploaded document"
+
+    project_root = Path(__file__).resolve().parents[3]
     upload_directory = project_root / "data" / "raw"
     upload_directory.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    file_path = upload_directory / file.filename
+    # A unique generated name prevents path traversal and overwriting.
+    stored_filename = f"{uuid4().hex}.pdf"
+    file_path = upload_directory / stored_filename
+
+    total_size = 0
 
     try:
-        file_content = await file.read()
-
+        # Stream the upload in chunks to avoid loading the whole file
+        # into memory.
         with open(file_path, "wb") as pdf_file:
-            pdf_file.write(file_content)
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK_SIZE)
 
-        extracted_text = extract_text_from_pdf(
-            str(file_path)
-        )
+                if not chunk:
+                    break
+
+                total_size += len(chunk)
+
+                if total_size > MAX_PDF_SIZE_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="PDF file exceeds the 10 MB upload limit",
+                    )
+
+                pdf_file.write(chunk)
+
+        if total_size == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="The uploaded PDF is empty",
+            )
+
+        # Extract text separately so invalid PDFs receive a client error.
+        try:
+            extracted_text = extract_text_from_pdf(str(file_path))
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Unable to read this PDF. "
+                    "The file may be corrupted or contain no readable text."
+                ),
+            )
 
         document = Document(
-            title=file.filename.rsplit(".", 1)[0],
+            title=title,
             content=extracted_text,
-            source=f"upload://{file.filename}",
+            source=f"upload://{stored_filename}",
             source_type="pdf",
         )
 
-        db.add(document)
-        db.commit()
-        db.refresh(document)
+        try:
+            db.add(document)
+            db.commit()
+            db.refresh(document)
+        except Exception:
+            db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to save the uploaded document.",
+            )
 
         return {
             "message": "PDF uploaded and indexed successfully",
@@ -133,18 +194,19 @@ async def upload_pdf(
             },
         }
 
-    except ValueError as error:
-        raise HTTPException(
-            status_code=400,
-            detail=str(error),
-        )
+    except HTTPException:
+        # Remove incomplete or rejected uploads.
+        if file_path.exists():
+            file_path.unlink()
+        raise
 
-    except Exception as error:
-        db.rollback()
+    except Exception:
+        if file_path.exists():
+            file_path.unlink()
 
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to process PDF: {error}",
+            detail="An unexpected error occurred while uploading the PDF.",
         )
 
     finally:
